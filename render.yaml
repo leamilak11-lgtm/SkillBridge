@@ -1,0 +1,54 @@
+version: "1"
+
+projects:
+  - name: SkillBridge
+    environments:
+      - name: Production
+        services:
+          - type: web
+            name: skillbridge-api
+            runtime: docker
+            plan: free
+            region: frankfurt
+            dockerfilePath: ./apps/api/Dockerfile
+            dockerContext: .
+            healthCheckPath: /api/health/ready
+            envVars:
+              - key: NODE_ENV
+                value: production
+              - key: PORT
+                value: "4000"
+              - key: WEB_ORIGIN
+                fromService:
+                  type: web
+                  name: skillbridge-web
+                  envVarKey: RENDER_EXTERNAL_URL
+              - key: DATABASE_URL
+                fromDatabase:
+                  name: skillbridge-db
+                  property: connectionString
+              - key: SESSION_SECRET
+                generateValue: true
+              - key: TRUST_PROXY_HOPS
+                value: "2"
+
+          - type: web
+            name: skillbridge-web
+            runtime: docker
+            plan: free
+            region: frankfurt
+            dockerfilePath: ./apps/web/Dockerfile
+            dockerContext: .
+            envVars:
+              - key: API_UPSTREAM
+                fromService:
+                  type: web
+                  name: skillbridge-api
+                  envVarKey: RENDER_EXTERNAL_URL
+
+        databases:
+          - name: skillbridge-db
+            databaseName: skillbridge
+            plan: free
+            region: frankfurt
+            postgresMajorVersion: "17"
