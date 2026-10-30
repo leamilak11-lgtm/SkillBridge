@@ -1,0 +1,27 @@
+{
+  "name": "skillbridge",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": ["apps/api", "apps/web"],
+  "scripts": {
+    "dev": "concurrently -k -n api,web -c cyan,magenta \"npm:dev:api\" \"npm:dev:web\"",
+    "dev:api": "npm --workspace @skillbridge/api run dev",
+    "dev:web": "npm --workspace @skillbridge/web run dev",
+    "build": "npm run build --workspace @skillbridge/api && npm run build --workspace @skillbridge/web",
+    "typecheck": "npm run typecheck --workspace @skillbridge/api && npm run typecheck --workspace @skillbridge/web",
+    "lint": "npm run lint --workspace @skillbridge/api && npm run lint --workspace @skillbridge/web",
+    "db:up": "docker compose up -d db",
+    "db:down": "docker compose down",
+    "db:migrate": "npm --workspace @skillbridge/api run db:migrate",
+    "db:seed": "npm --workspace @skillbridge/api run db:seed",
+    "db:studio": "npm --workspace @skillbridge/api run db:studio",
+    "data:cleanup": "npm --workspace @skillbridge/api run data:cleanup --",
+    "test": "npm run test --workspace @skillbridge/api && npm run test --workspace @skillbridge/web"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "prisma": "6.19.0",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  }
+}

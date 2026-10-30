@@ -1,0 +1,66 @@
+import cookieParser from "cookie-parser";
+import cors from "cors";
+import express from "express";
+import { randomUUID } from "node:crypto";
+import { config } from "./config.js";
+import { errorHandler } from "./middleware/errors.js";
+import { authRouter } from "./routes/auth.js";
+import { healthRouter } from "./routes/health.js";
+import { applicationsRouter } from "./routes/applications.js";
+import { goalsRouter } from "./routes/goals.js";
+import { jobsRouter } from "./routes/jobs.js";
+import { profileRouter } from "./routes/profile.js";
+import { resumesRouter } from "./routes/resumes.js";
+import { savedJobsRouter } from "./routes/saved-jobs.js";
+import { recruiterRouter } from "./routes/recruiter.js";
+import { adminRouter } from "./routes/admin.js";
+import { reportsRouter } from "./routes/reports.js";
+import { notificationsRouter } from "./routes/notifications.js";
+import { interviewPrepRouter } from "./routes/interview-prep.js";
+import { recommendationsRouter } from "./routes/recommendations.js";
+import { ApiError } from "./errors.js";
+import { requestLogging } from "./middleware/request-logging.js";
+export const app = express();
+app.disable("x-powered-by");
+if (config.trustProxyHops > 0) app.set("trust proxy", config.trustProxyHops);
+app.use((_request, response, next) => {
+  response.setHeader("X-Request-Id", randomUUID());
+  response.setHeader("X-Content-Type-Options", "nosniff");
+  response.setHeader("X-Frame-Options", "DENY");
+  response.setHeader("Referrer-Policy", "no-referrer");
+  response.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+  response.setHeader("Cache-Control", "no-store");
+  if (config.nodeEnv === "production") response.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+  next();
+});
+app.use(requestLogging);
+app.use("/api", (request, _response, next) => {
+  const origin = request.get("Origin");
+  const isWrite = !["GET", "HEAD", "OPTIONS"].includes(request.method);
+  if (isWrite && origin && origin !== config.webOrigin) {
+    next(new ApiError(403, "ORIGIN_REJECTED", "This request origin is not allowed."));
+    return;
+  }
+  next();
+});
+app.use(cors({ origin: config.webOrigin, credentials: true }));
+app.use(express.json({ limit: "1mb" }));
+app.use(cookieParser());
+app.use("/api/health", healthRouter);
+app.use("/api/auth", authRouter);
+app.use("/api/profile", profileRouter);
+app.use("/api/resumes", resumesRouter);
+app.use("/api/jobs", jobsRouter);
+app.use("/api/saved-jobs", savedJobsRouter);
+app.use("/api/applications", applicationsRouter);
+app.use("/api/goals", goalsRouter);
+app.use("/api/recruiter", recruiterRouter);
+app.use("/api/admin", adminRouter);
+app.use("/api/reports", reportsRouter);
+app.use("/api/notifications", notificationsRouter);
+app.use("/api/interview-prep", interviewPrepRouter);
+app.use("/api/recommendations", recommendationsRouter);
+app.use((_request, response) => {
+  response.status(404).json({ error: { code: "NOT_FOUND", message: "This endpoint does not exist." } });
+});
+app.use(errorHandler);
