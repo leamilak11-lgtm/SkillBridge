@@ -7,12 +7,11 @@ type AuthContextValue = {
   user: User | null;
   loading: boolean;
   signIn: (email: string, password: string) => Promise<User>;
-  register: (name: string, email: string, password: string) => Promise<RegistrationResult>;
-  registerRecruiter: (input: { name: string; email: string; password: string; companyName: string; companyDescription?: string; companyWebsite?: string; companyLocation?: string }) => Promise<RegistrationResult>;
+  register: (name: string, username: string, email: string, phone: string, password: string) => Promise<User>;
+  registerRecruiter: (input: { name: string; username: string; email: string; phone: string; password: string; companyName: string; companyDescription?: string; companyWebsite?: string; companyLocation?: string }) => Promise<User>;
   signOut: () => Promise<void>;
   refresh: () => Promise<void>;
 };
-export type RegistrationResult = { message: string; developmentVerificationUrl?: string };
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -38,11 +37,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setUser(result.user);
       return result.user;
     },
-    async register(name, email, password) {
-      return api<RegistrationResult>("/auth/register", { method: "POST", body: { name, email, password } });
+    async register(name, username, email, phone, password) {
+      const result = await api<{ user: User }>("/auth/register", { method: "POST", body: { name, username, email, phone, password } });
+      setUser(result.user);
+      return result.user;
     },
     async registerRecruiter(input) {
-      return api<RegistrationResult>("/auth/register-recruiter", { method: "POST", body: input });
+      const result = await api<{ user: User }>("/auth/register-recruiter", { method: "POST", body: input });
+      setUser(result.user);
+      return result.user;
     },
     async signOut() {
       await api("/auth/logout", { method: "POST" });

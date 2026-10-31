@@ -9,15 +9,13 @@ import { authenticate } from "../middleware/auth.js";
 import { requestBody } from "../middleware/validate.js";
 import { hashPassword, verifyPassword } from "../security/password.js";
 import { createRateLimit } from "../middleware/rate-limit.js";
-import { emailDeliveryConfigured, sendPasswordResetEmail, sendVerificationEmail } from "../services/email.js";
 
 export const authRouter = Router();
 const accountAttemptLimit = createRateLimit(config.authRateLimitMax, config.authRateLimitWindowMs);
 const emailSchema = z.string().trim().email().max(254).transform((value) => value.toLowerCase());
 const passwordSchema = z.string().min(10).max(128);
+const phoneSchema = z.string().trim().min(7).max(32).regex(/^\+?[0-9 ()-]+$/).transform((value) => value.replace(/[ ()-]/g, ""));
 const credentialsSchema = z.object({ email: emailSchema, password: passwordSchema });
-const verificationRequestSchema = z.object({ email: emailSchema });
-const verificationTokenSchema = z.object({ token: z.string().min(20).max(200) });
 const GOOGLE_STATE_COOKIE = "skillbridge_google_state";
 const GOOGLE_INTENT_COOKIE = "skillbridge_google_intent";
 const googleIntentSchema = z.object({
@@ -29,40 +27,8 @@ const googleIntentSchema = z.object({
 }).refine((intent) => intent.role !== "RECRUITER" || Boolean(intent.companyName), {
   path: ["companyName"], message: "Enter a company name to create a recruiter account with Google.",
 });
-function publicUser(user: { id: string; name: string; email: string; role: string; profile: unknown }) {
-  return { id: user.id, name: user.name, email: user.email, role: user.role, profile: user.profile };
-}
-
-function verificationUrl(token: string) {
-  const url = new URL("/verify-email", config.webOrigin);
-  url.hash = new URLSearchParams({ token }).toString();
-  return url.toString();
-}
-
-function passwordResetUrl(token: string) {
-  const url = new URL("/password-reset", config.webOrigin);
-  url.hash = new URLSearchParams({ token }).toString();
-  return url.toString();
-}
-
-function requireEmailDelivery() {
-  if (!emailDeliveryConfigured() && config.nodeEnv !== "development") {
-    throw serviceUnavailable("Email verification is not configured. Please contact the site administrator.");
-  }
-}
-
-async function issueVerification(user: { id: string; name: string; email: string }) {
-  const token = randomBytes(32).toString("base64url");
-  await prisma.emailVerificationToken.updateMany({ where: { userId: user.id, usedAt: null }, data: { usedAt: new Date() } });
-  await prisma.emailVerificationToken.create({
-    data: { userId: user.id, tokenHash: hashToken(token), expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000) },
-  });
-  const link = verificationUrl(token);
-  if (emailDeliveryConfigured()) {
-    await sendVerificationEmail(user.email, user.name, link);
-    return { message: "We sent a verification link to your email address." };
-  }
-  return { message: "Your account is ready. Verify your email before signing in.", developmentVerificationUrl: link };
+function publicUser(user: { id: string; name: string; username: string; phone: string | null; email: string; role: string; profile: unknown }) {
+  return { id: user.id, name: user.name, username: user.username, phone: user.phone, email: user.email, role: user.role, profile: user.profile };
 }
 
 function redirectToWeb(path: string) {
@@ -80,23 +46,29 @@ authRouter.get("/providers", (_request, response) => {
 });
 
 authRouter.post("/register", accountAttemptLimit, async (request, response) => {
-  const input = requestBody(request, credentialsSchema.extend({ name: z.string().trim().min(2).max(120) }));
-  requireEmailDelivery();
-  const existing = await prisma.user.findUnique({ where: { email: input.email } });
-  if (existing) throw conflict("An account with that email already exists.");
+  const input = requestBody(request, credentialsSchema.extend({
+    name: z.string().trim().min(2).max(120),
+    username: z.string().trim().min(3).max(40).regex(/^[a-zA-Z0-9_.-]+$/).transform((value) => value.toLowerCase()),
+    phone: phoneSchema,
+  }));
+  const existing = await prisma.user.findFirst({ where: { OR: [{ email: input.email }, { username: input.username }] } });
+  if (existing) throw conflict("An account with that email or username already exists.");
   const user = await prisma.user.create({
     data: {
-      name: input.name, email: input.email, passwordHash: await hashPassword(input.password),
+      name: input.name, username: input.username, phone: input.phone, email: input.email, passwordHash: await hashPassword(input.password),
+      emailVerifiedAt: new Date(),
       role: "JOB_SEEKER", profile: { create: {} },
     },
     include: { profile: true },
   });
-  const verification = await issueVerification(user);
-  response.status(201).json(verification);
+  await createSession(user.id, response);
+  response.status(201).json({ user: publicUser(user) });
 });
 
 const recruiterRegistrationSchema = credentialsSchema.extend({
   name: z.string().trim().min(2).max(120),
+  username: z.string().trim().min(3).max(40).regex(/^[a-zA-Z0-9_.-]+$/).transform((value) => value.toLowerCase()),
+  phone: phoneSchema,
   companyName: z.string().trim().min(2).max(180),
   companyDescription: z.string().trim().max(3000).optional(),
   companyWebsite: z.string().trim().url().max(500).optional().or(z.literal("")),
@@ -104,12 +76,16 @@ const recruiterRegistrationSchema = credentialsSchema.extend({
 });
 authRouter.post("/register-recruiter", accountAttemptLimit, async (request, response) => {
   const input = requestBody(request, recruiterRegistrationSchema);
-  requireEmailDelivery();
+  const existing = await prisma.user.findFirst({ where: { OR: [{ email: input.email }, { username: input.username }] } });
+  if (existing) throw conflict("An account with that email or username already exists.");
   const user = await prisma.user.create({
     data: {
       name: input.name,
+      username: input.username,
+      phone: input.phone,
       email: input.email,
       passwordHash: await hashPassword(input.password),
+      emailVerifiedAt: new Date(),
       role: "RECRUITER",
       memberships: {
         create: {
@@ -130,42 +106,8 @@ authRouter.post("/register-recruiter", accountAttemptLimit, async (request, resp
   await prisma.auditLog.create({
     data: { actorId: user.id, action: "RECRUITER_ACCOUNT_CREATED", target: input.companyName },
   });
-  const verification = await issueVerification(user);
-  response.status(201).json(verification);
-});
-
-authRouter.post("/email-verification/resend", accountAttemptLimit, async (request, response) => {
-  const { email } = requestBody(request, verificationRequestSchema);
-  requireEmailDelivery();
-  const user = await prisma.user.findUnique({ where: { email }, select: { id: true, name: true, email: true, emailVerifiedAt: true } });
-  const result: { message: string; developmentVerificationUrl?: string } = {
-    message: "If that account still needs verification, we sent a new link to the address provided.",
-  };
-  if (user && !user.emailVerifiedAt) Object.assign(result, await issueVerification(user));
-  response.json(result);
-});
-
-authRouter.post("/email-verification/confirm", accountAttemptLimit, async (request, response) => {
-  const { token } = requestBody(request, verificationTokenSchema);
-  const verification = await prisma.emailVerificationToken.findUnique({
-    where: { tokenHash: hashToken(token) }, include: { user: { select: { id: true, emailVerifiedAt: true } } },
-  });
-  if (!verification) throw unauthorized("That verification link is invalid or expired.");
-  if (verification.user.emailVerifiedAt) {
-    response.json({ message: "Your email is already verified. You can sign in." });
-    return;
-  }
-  const now = new Date();
-  if (verification.usedAt || verification.expiresAt <= now) throw unauthorized("That verification link is invalid or expired. Request a new one.");
-  await prisma.$transaction(async (tx) => {
-    const claimed = await tx.emailVerificationToken.updateMany({
-      where: { id: verification.id, usedAt: null, expiresAt: { gt: now } }, data: { usedAt: now },
-    });
-    if (claimed.count !== 1) throw unauthorized("That verification link is invalid or expired. Request a new one.");
-    await tx.user.update({ where: { id: verification.userId }, data: { emailVerifiedAt: now } });
-    await tx.emailVerificationToken.updateMany({ where: { userId: verification.userId, usedAt: null }, data: { usedAt: now } });
-  });
-  response.json({ message: "Your email is verified. You can sign in now." });
+  await createSession(user.id, response);
+  response.status(201).json({ user: publicUser(user) });
 });
 
 authRouter.get("/google", (request, response) => {
@@ -272,7 +214,8 @@ authRouter.get("/google/callback", async (request, response) => {
       const name = (googleProfile.name?.trim() || email.split("@")[0] || "SkillBridge recruiter").slice(0, 120);
       signedInUser = await prisma.user.create({
         data: {
-          name, email, passwordHash: await hashPassword(randomBytes(32).toString("base64url")),
+          name, username: "google_" + randomBytes(8).toString("hex"), phone: null,
+          email, passwordHash: await hashPassword(randomBytes(32).toString("base64url")),
           emailVerifiedAt: new Date(), googleSubject: googleProfile.sub, role: "RECRUITER",
           memberships: {
             create: {
@@ -294,7 +237,8 @@ authRouter.get("/google/callback", async (request, response) => {
       const name = (googleProfile.name?.trim() || email.split("@")[0] || "SkillBridge user").slice(0, 120);
       signedInUser = await prisma.user.create({
         data: {
-          name, email, passwordHash: await hashPassword(randomBytes(32).toString("base64url")),
+          name, username: "google_" + randomBytes(8).toString("hex"), phone: null,
+          email, passwordHash: await hashPassword(randomBytes(32).toString("base64url")),
           emailVerifiedAt: new Date(), googleSubject: googleProfile.sub, role: "JOB_SEEKER", profile: { create: {} },
         }, include: { profile: true },
       });
@@ -312,7 +256,6 @@ authRouter.post("/login", accountAttemptLimit, async (request, response) => {
   if (!user || user.isSuspended || !(await verifyPassword(input.password, user.passwordHash))) {
     throw unauthorized("Email or password is incorrect.");
   }
-  if (!user.emailVerifiedAt) throw unauthorized("Verify your email before signing in. Check your inbox or request a new verification link.");
   await createSession(user.id, response);
   response.json({ user: publicUser(user) });
 });
@@ -328,37 +271,23 @@ authRouter.get("/me", authenticate, async (request, response) => {
   response.json({ user: publicUser(user) });
 });
 
-const resetRequestSchema = z.object({ email: emailSchema });
-authRouter.post("/password-reset/request", accountAttemptLimit, async (request, response) => {
-  const { email } = requestBody(request, resetRequestSchema);
-  requireEmailDelivery();
-  const user = await prisma.user.findUnique({ where: { email } });
-  const result: { message: string; developmentToken?: string } = {
-    message: "If that account exists, password reset instructions will be sent to the address provided.",
-  };
-  if (user) {
-    const token = randomBytes(32).toString("base64url");
-    await prisma.passwordResetToken.create({
-      data: { userId: user.id, tokenHash: hashToken(token), expiresAt: new Date(Date.now() + 30 * 60 * 1000) },
-    });
-    if (emailDeliveryConfigured()) await sendPasswordResetEmail(user.email, user.name, passwordResetUrl(token));
-    else if (config.nodeEnv === "development") result.developmentToken = token;
-  }
-  response.json(result);
+const resetRequestSchema = z.object({
+  username: z.string().trim().min(3).max(40).transform((value) => value.toLowerCase()),
+  email: emailSchema,
+  phone: phoneSchema,
+  newPassword: passwordSchema,
 });
-
-const resetSchema = z.object({ token: z.string().min(20).max(200), password: passwordSchema });
-authRouter.post("/password-reset/complete", accountAttemptLimit, async (request, response) => {
-  const input = requestBody(request, resetSchema);
-  const reset = await prisma.passwordResetToken.findFirst({
-    where: { tokenHash: hashToken(input.token), usedAt: null, expiresAt: { gt: new Date() } },
+authRouter.post("/password-reset/request", accountAttemptLimit, async (request, response) => {
+  const input = requestBody(request, resetRequestSchema);
+  const user = await prisma.user.findFirst({
+    where: { username: input.username, email: input.email, phone: input.phone },
   });
-  if (!reset) throw unauthorized("That reset link is invalid or expired.");
-  const passwordHash = await hashPassword(input.password);
+  if (!user || user.isSuspended) throw unauthorized("The username, email, or phone number did not match this account.");
+  const passwordHash = await hashPassword(input.newPassword);
   await prisma.$transaction([
-    prisma.user.update({ where: { id: reset.userId }, data: { passwordHash } }),
-    prisma.passwordResetToken.update({ where: { id: reset.id }, data: { usedAt: new Date() } }),
-    prisma.session.deleteMany({ where: { userId: reset.userId } }),
+    prisma.user.update({ where: { id: user.id }, data: { passwordHash } }),
+    prisma.passwordResetToken.updateMany({ where: { userId: user.id, usedAt: null }, data: { usedAt: new Date() } }),
+    prisma.session.deleteMany({ where: { userId: user.id } }),
   ]);
   response.json({ message: "Your password has been updated. Sign in with your new password." });
 });

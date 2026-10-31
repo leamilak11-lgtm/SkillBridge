@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { randomBytes } from "node:crypto";
 import { stdin, stdout } from "node:process";
 import { prisma } from "../db.js";
 import { hashPassword } from "../security/password.js";
@@ -48,7 +49,7 @@ const email = emailArg.toLowerCase();
 const existing = await prisma.user.findUnique({ where: { email } });
 const user = existing
   ? await prisma.user.update({ where: { email }, data: { role: "ADMIN", passwordHash: await hashPassword(password), emailVerifiedAt: new Date() } })
-  : await prisma.user.create({ data: { name: "SkillBridge Administrator", email, passwordHash: await hashPassword(password), role: "ADMIN", emailVerifiedAt: new Date() } });
+  : await prisma.user.create({ data: { name: "SkillBridge Administrator", username: "admin_" + randomBytes(6).toString("hex"), phone: null, email, passwordHash: await hashPassword(password), role: "ADMIN", emailVerifiedAt: new Date() } });
 console.info("Administrator account ready for " + user.email + ".");
 await prisma.auditLog.create({ data: { actorId: user.id, action: "ADMIN_ACCOUNT_CREATED", target: user.email } });
 await prisma.$disconnect();

@@ -11,6 +11,7 @@ async function main() {
     demoUser = await prisma.user.create({
       data: {
         name: "SkillBridge Demo Recruiter", email: demoEmail,
+        username: "demo_recruiter", phone: null,
         passwordHash: await hashPassword(randomUUID()),
         role: "RECRUITER", emailVerifiedAt: new Date(),
       },

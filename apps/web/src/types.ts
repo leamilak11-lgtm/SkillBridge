@@ -1,4 +1,4 @@
-export type User = { id: string; name: string; email: string; role: "JOB_SEEKER" | "RECRUITER" | "ADMIN" };
+export type User = { id: string; name: string; username?: string; phone?: string | null; email: string; role: "JOB_SEEKER" | "RECRUITER" | "ADMIN" };
 export type Match = {
   score: number | null;
   description: string;
