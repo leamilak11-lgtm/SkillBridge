@@ -1,5 +1,7 @@
 FROM node:24-bookworm-slim AS build
 WORKDIR /workspace
+RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
 COPY package.json package-lock.json ./
 COPY tsconfig.base.json ./
 COPY apps/api/package.json ./apps/api/package.json
