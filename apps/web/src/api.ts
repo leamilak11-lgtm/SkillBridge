@@ -37,5 +37,18 @@ export async function api<T>(path: string, options: ApiOptions = {}): Promise<T>
 }
 
 export function errorMessage(error: unknown) {
+  if (error instanceof ApiError && Array.isArray(error.details) && error.details.length > 0) {
+    const fields = error.details
+      .filter((detail): detail is { path: string; message: string } => Boolean(detail) && typeof detail === "object" && "path" in detail && "message" in detail)
+      .map((detail) => {
+        const label = detail.path
+          .split(".")
+          .filter(Boolean)
+          .map((part) => part.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/^./, (character) => character.toUpperCase()))
+          .join(" ");
+        return label ? `${label}: ${detail.message}` : detail.message;
+      });
+    if (fields.length > 0) return `Please correct: ${fields.join("; ")}`;
+  }
   return error instanceof Error ? error.message : "Something went wrong.";
 }
