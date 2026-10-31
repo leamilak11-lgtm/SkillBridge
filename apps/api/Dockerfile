@@ -18,7 +18,10 @@ COPY --from=build --chown=node:node /workspace/node_modules ./node_modules
 COPY --from=build --chown=node:node /workspace/apps/api/package.json ./apps/api/package.json
 COPY --from=build --chown=node:node /workspace/apps/api/dist ./apps/api/dist
 COPY --from=build --chown=node:node /workspace/apps/api/prisma ./apps/api/prisma
-RUN mkdir -p /data/private && chown -R node:node /data
+RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates \
+  && rm -rf /var/lib/apt/lists/* \
+  && mkdir -p /data/private \
+  && chown -R node:node /data
 VOLUME ["/data"]
 USER node
 EXPOSE 4000
